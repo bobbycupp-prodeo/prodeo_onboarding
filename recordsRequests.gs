@@ -1,40 +1,102 @@
-/**
- * RecReq Reset Script
- *
- * Purpose:
- * When B46 is checked on any sheet whose name starts with "RecReq",
- * confirm with the user, then reset selected Column B cells based on
- * the corresponding instructions in Column D.
- *
- * Instructions:
- * - If D[row] contains exactly "Clear Value", B[row] is cleared.
- * - If D[row] contains a formula, that exact formula is placed in B[row].
- * - Otherwise, B[row] is set to the raw value from D[row].
- */
+/***************************************
+ * recordsRequests.gs
+ ***************************************/
 
-const REC_REQ_RESET_CONFIG = {
+const RECORDS_REQUESTS_RESET_CONFIG = {
   sheetNamePrefix: 'RecReq',
   checkboxA1: 'B46',
-  instructionColumn: 4, // Column D
-  targetColumn: 2,      // Column B
+  instructionColumn: 4,
+  targetColumn: 2,
   rowsToReset: [4, 5, 6, 9, 10, 11, 12, 27, 28, 29, 31, 32, 33],
   clearInstructionText: 'Clear Value',
 };
 
-/**
- * Installable on-edit handler for RecReq reset behavior.
- *
- * Create an installable on-edit trigger pointing to this function.
- *
- * @param {GoogleAppsScript.Events.SheetsOnEdit} e
- */
-function RecReq_Reset_onEdit(e) {
-  if (!e || !e.range) return;
+const RECORDS_REQUESTS_PDF_CONFIG = {
+  sheetNamePrefix: 'RecReq',
+  checkboxA1: 'B47',
+  requiredCellA1: 'B5',
+  filenameCellA1: 'C1',
+  destinationFolderId: '1eOAv5hCciCS5RiEfRyXC2K3HiN3bbBZb',
+};
+
+
+/***************************************
+ * Logging helper
+ ***************************************/
+
+function RecordsRequests_log_(message, data) {
+  const timestamp = new Date().toISOString();
+
+  if (data === undefined) {
+    Logger.log('[RecordsRequests] %s | %s', timestamp, message);
+    return;
+  }
+
+  Logger.log(
+    '[RecordsRequests] %s | %s | %s',
+    timestamp,
+    message,
+    JSON.stringify(data)
+  );
+}
+
+
+/***************************************
+ * Main Records Requests edit dispatcher
+ ***************************************/
+
+function RecordsRequests_onEdit(e) {
+  RecordsRequests_log_('onEdit started');
+
+  if (!e || !e.range) {
+    RecordsRequests_log_('onEdit exited: missing event or range');
+    return;
+  }
 
   const range = e.range;
   const sheet = range.getSheet();
 
-  if (!RecReq_Reset_shouldHandleEdit_(sheet, range, e.value)) return;
+  RecordsRequests_log_('Edit detected', {
+    sheetName: sheet.getName(),
+    rangeA1: range.getA1Notation(),
+    value: e.value,
+    oldValue: e.oldValue,
+  });
+
+  RecordsRequests_handleRecReqReset_(e);
+  RecordsRequests_handleRecReqPdfExport_(e);
+
+  RecordsRequests_log_('onEdit completed');
+}
+
+
+/***************************************
+ * Reset checkbox functions
+ ***************************************/
+
+function RecordsRequests_handleRecReqReset_(e) {
+  if (!e || !e.range) {
+    RecordsRequests_log_('Reset handler exited: missing event or range');
+    return;
+  }
+
+  const range = e.range;
+  const sheet = range.getSheet();
+
+  RecordsRequests_log_('Reset handler checking edit', {
+    sheetName: sheet.getName(),
+    rangeA1: range.getA1Notation(),
+    value: e.value,
+  });
+
+  if (!RecordsRequests_shouldHandleRecReqReset_(sheet, range, e.value)) {
+    RecordsRequests_log_('Reset handler skipped');
+    return;
+  }
+
+  RecordsRequests_log_('Reset checkbox triggered', {
+    sheetName: sheet.getName(),
+  });
 
   const ui = SpreadsheetApp.getUi();
 
@@ -44,45 +106,64 @@ function RecReq_Reset_onEdit(e) {
     ui.ButtonSet.YES_NO
   );
 
-  
+  RecordsRequests_log_('Reset confirmation response received', {
+    response: response.toString(),
+  });
 
   if (response !== ui.Button.YES) {
+    RecordsRequests_log_('Reset canceled by user');
     range.setValue(false);
     return;
   }
 
-  RecReq_Reset_applyReset_(sheet);
+  RecordsRequests_applyRecReqReset_(sheet);
 
-  // Uncheck the reset checkbox after the reset completes.
-  // Script-made edits do not cause edit triggers to run again. 
   range.setValue(false);
+
+  RecordsRequests_log_('Reset completed and checkbox unchecked', {
+    sheetName: sheet.getName(),
+  });
 }
 
-/**
- * Determines whether this edit should trigger the RecReq reset logic.
- *
- * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
- * @param {GoogleAppsScript.Spreadsheet.Range} range
- * @param {string|undefined} editedValue
- * @returns {boolean}
- */
-function RecReq_Reset_shouldHandleEdit_(sheet, range, editedValue) {
-  const config = REC_REQ_RESET_CONFIG;
 
-  if (!sheet.getName().startsWith(config.sheetNamePrefix)) return false;
-  if (range.getA1Notation() !== config.checkboxA1) return false;
+function RecordsRequests_shouldHandleRecReqReset_(sheet, range, editedValue) {
+  const config = RECORDS_REQUESTS_RESET_CONFIG;
 
-  // Checkboxes usually pass "TRUE" / "FALSE" as strings in the event object.
-  return editedValue === 'TRUE';
+  if (!sheet.getName().startsWith(config.sheetNamePrefix)) {
+    RecordsRequests_log_('Reset check failed: sheet prefix mismatch', {
+      sheetName: sheet.getName(),
+      expectedPrefix: config.sheetNamePrefix,
+    });
+    return false;
+  }
+
+  if (range.getA1Notation() !== config.checkboxA1) {
+    RecordsRequests_log_('Reset check failed: edited cell mismatch', {
+      editedCell: range.getA1Notation(),
+      expectedCell: config.checkboxA1,
+    });
+    return false;
+  }
+
+  if (editedValue !== 'TRUE') {
+    RecordsRequests_log_('Reset check failed: checkbox not TRUE', {
+      editedValue: editedValue,
+    });
+    return false;
+  }
+
+  RecordsRequests_log_('Reset check passed');
+  return true;
 }
 
-/**
- * Applies the reset instructions from Column D to Column B.
- *
- * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
- */
-function RecReq_Reset_applyReset_(sheet) {
-  const config = REC_REQ_RESET_CONFIG;
+
+function RecordsRequests_applyRecReqReset_(sheet) {
+  const config = RECORDS_REQUESTS_RESET_CONFIG;
+
+  RecordsRequests_log_('Applying reset instructions', {
+    sheetName: sheet.getName(),
+    rowsToReset: config.rowsToReset,
+  });
 
   config.rowsToReset.forEach(function(rowNumber) {
     const targetCell = sheet.getRange(rowNumber, config.targetColumn);
@@ -91,136 +172,88 @@ function RecReq_Reset_applyReset_(sheet) {
     const instructionFormula = instructionCell.getFormula();
     const instructionValue = instructionCell.getValue();
 
+    RecordsRequests_log_('Processing reset row', {
+      rowNumber: rowNumber,
+      targetCell: targetCell.getA1Notation(),
+      instructionCell: instructionCell.getA1Notation(),
+      instructionValue: instructionValue,
+      hasInstructionFormula: Boolean(instructionFormula),
+    });
+
     if (instructionValue === config.clearInstructionText) {
       targetCell.clearContent();
+
+      RecordsRequests_log_('Target cell cleared', {
+        targetCell: targetCell.getA1Notation(),
+      });
+
       return;
     }
 
     if (instructionFormula) {
       targetCell.setFormula(instructionFormula);
+
+      RecordsRequests_log_('Formula applied to target cell', {
+        targetCell: targetCell.getA1Notation(),
+        formula: instructionFormula,
+      });
+
       return;
     }
 
     targetCell.setValue(instructionValue);
+
+    RecordsRequests_log_('Value applied to target cell', {
+      targetCell: targetCell.getA1Notation(),
+      value: instructionValue,
+    });
+  });
+
+  RecordsRequests_log_('Reset instructions completed', {
+    sheetName: sheet.getName(),
   });
 }
 
-/**
- * Optional helper:
- * Run this once manually to create the installable on-edit trigger.
- *
- * This removes any existing RecReq_Reset_onEdit triggers first
- * to avoid duplicate executions.
- */
-function RecReq_Reset_createInstallableOnEditTrigger() {
-  const ss = SpreadsheetApp.getActive();
 
-  ScriptApp.getProjectTriggers().forEach(function(trigger) {
-    if (trigger.getHandlerFunction() === 'RecReq_Reset_onEdit') {
-      ScriptApp.deleteTrigger(trigger);
-    }
-  });
+/***************************************
+ * PDF export checkbox functions
+ ***************************************/
 
-  ScriptApp.newTrigger('RecReq_Reset_onEdit')
-    .forSpreadsheet(ss)
-    .onEdit()
-    .create();
-}
-
-/**
- * Exports a single sheet tab as a PDF and saves it to Drive.
- *
- * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
- * @param {string} pdfName
- * @param {string=} folderId Optional Drive folder ID. If omitted, saves to My Drive root.
- * @returns {GoogleAppsScript.Drive.File}
- */
-function RecordsRequests_exportSheetAsPdf_(sheet, pdfName, folderId) {
-  const spreadsheet = sheet.getParent();
-  const spreadsheetId = spreadsheet.getId();
-  const sheetId = sheet.getSheetId();
-
-  
-
-  const exportUrl =
-    'https://docs.google.com/spreadsheets/d/' + spreadsheetId + '/export?' +
-    [
-      'format=pdf',
-      'gid=' + sheetId,
-
-      // Page setup
-      'size=letter',
-      'portrait=true',
-      // 'fitw=true',
-      'scale=4',
-
-      // Margins
-      'top_margin=0.5',
-      'bottom_margin=0.5',
-      'left_margin=0.5',
-      'right_margin=0.5',
-
-      // Display options
-      'sheetnames=false',
-      'printtitle=false',
-      'pagenumbers=false',
-      'gridlines=false',
-      'fzr=false',
-
-      // Export behavior
-      'attachment=false'
-    ].join('&');
-
-  const token = ScriptApp.getOAuthToken();
-
-  const response = UrlFetchApp.fetch(exportUrl, {
-    method: 'get',
-    headers: {
-      Authorization: 'Bearer ' + token,
-    },
-    muteHttpExceptions: true,
-  });
-
-  const responseCode = response.getResponseCode();
-
-  if (responseCode !== 200) {
-    throw new Error(
-      'PDF export failed. Response code: ' +
-      responseCode +
-      '. Response: ' +
-      response.getContentText()
-    );
-  }
-
-  const pdfBlob = response
-    .getBlob()
-    .setName(pdfName.endsWith('.pdf') ? pdfName : pdfName + '.pdf');
-
-  if (folderId) {
-    return DriveApp.getFolderById(folderId).createFile(pdfBlob);
-  }
-
-  return DriveApp.createFile(pdfBlob);
-}
-
-/**
- * Handles the RecReq PDF export checkbox behavior.
- *
- * @param {GoogleAppsScript.Events.SheetsOnEdit} e
- */
 function RecordsRequests_handleRecReqPdfExport_(e) {
-  if (!e || !e.range) return;
+  if (!e || !e.range) {
+    RecordsRequests_log_('PDF handler exited: missing event or range');
+    return;
+  }
 
   const range = e.range;
   const sheet = range.getSheet();
 
-  if (!RecordsRequests_shouldHandleRecReqPdfExport_(sheet, range, e.value)) return;
+  RecordsRequests_log_('PDF handler checking edit', {
+    sheetName: sheet.getName(),
+    rangeA1: range.getA1Notation(),
+    value: e.value,
+  });
+
+  if (!RecordsRequests_shouldHandleRecReqPdfExport_(sheet, range, e.value)) {
+    RecordsRequests_log_('PDF handler skipped');
+    return;
+  }
 
   const spreadsheet = sheet.getParent();
   const config = RECORDS_REQUESTS_PDF_CONFIG;
 
+  RecordsRequests_log_('PDF export triggered', {
+    sheetName: sheet.getName(),
+    spreadsheetId: spreadsheet.getId(),
+  });
+
   try {
     const requiredValue = sheet.getRange(config.requiredCellA1).getValue();
+
+    RecordsRequests_log_('PDF required cell checked', {
+      requiredCell: config.requiredCellA1,
+      requiredValue: requiredValue,
+    });
 
     if (requiredValue === '' || requiredValue === null) {
       spreadsheet.toast(
@@ -229,12 +262,19 @@ function RecordsRequests_handleRecReqPdfExport_(e) {
         5
       );
 
+      RecordsRequests_log_('PDF export skipped: required cell blank');
       range.setValue(false);
       return;
     }
 
     const rawFileName = sheet.getRange(config.filenameCellA1).getDisplayValue();
     const pdfName = RecordsRequests_sanitizePdfFileName_(rawFileName);
+
+    RecordsRequests_log_('PDF filename prepared', {
+      filenameCell: config.filenameCellA1,
+      rawFileName: rawFileName,
+      sanitizedPdfName: pdfName,
+    });
 
     if (!pdfName) {
       spreadsheet.toast(
@@ -243,6 +283,7 @@ function RecordsRequests_handleRecReqPdfExport_(e) {
         5
       );
 
+      RecordsRequests_log_('PDF export skipped: invalid filename');
       range.setValue(false);
       return;
     }
@@ -253,11 +294,23 @@ function RecordsRequests_handleRecReqPdfExport_(e) {
       5
     );
 
+    RecordsRequests_log_('Calling PDF export function', {
+      sheetName: sheet.getName(),
+      pdfName: pdfName,
+      destinationFolderId: config.destinationFolderId,
+    });
+
     const pdfFile = RecordsRequests_exportRecReqSheetAsPdf_(
       sheet,
       pdfName,
       config.destinationFolderId
     );
+
+    RecordsRequests_log_('PDF file created', {
+      fileName: pdfFile.getName(),
+      fileUrl: pdfFile.getUrl(),
+      fileId: pdfFile.getId(),
+    });
 
     spreadsheet.toast(
       'PDF saved: ' + pdfFile.getName(),
@@ -267,10 +320,14 @@ function RecordsRequests_handleRecReqPdfExport_(e) {
 
     range.setValue(false);
 
+    RecordsRequests_log_('PDF checkbox unchecked');
+
     RecordsRequests_showPdfExportCompleteAlert_(
       pdfFile,
       config.destinationFolderId
     );
+
+    RecordsRequests_log_('PDF completion dialog shown');
 
   } catch (error) {
     range.setValue(false);
@@ -281,40 +338,58 @@ function RecordsRequests_handleRecReqPdfExport_(e) {
       8
     );
 
-    Logger.log(error);
+    RecordsRequests_log_('PDF export failed', {
+      errorName: error.name,
+      errorMessage: error.message,
+      errorStack: error.stack,
+    });
+
     throw error;
   }
 }
 
-/**
- * Determines whether the edit should trigger the RecReq PDF export.
- *
- * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
- * @param {GoogleAppsScript.Spreadsheet.Range} range
- * @param {string|undefined} editedValue
- * @returns {boolean}
- */
+
 function RecordsRequests_shouldHandleRecReqPdfExport_(sheet, range, editedValue) {
   const config = RECORDS_REQUESTS_PDF_CONFIG;
 
-  if (!sheet.getName().startsWith(config.sheetNamePrefix)) return false;
-  if (range.getA1Notation() !== config.checkboxA1) return false;
+  if (!sheet.getName().startsWith(config.sheetNamePrefix)) {
+    RecordsRequests_log_('PDF check failed: sheet prefix mismatch', {
+      sheetName: sheet.getName(),
+      expectedPrefix: config.sheetNamePrefix,
+    });
+    return false;
+  }
 
-  return editedValue === 'TRUE';
+  if (range.getA1Notation() !== config.checkboxA1) {
+    RecordsRequests_log_('PDF check failed: edited cell mismatch', {
+      editedCell: range.getA1Notation(),
+      expectedCell: config.checkboxA1,
+    });
+    return false;
+  }
+
+  if (editedValue !== 'TRUE') {
+    RecordsRequests_log_('PDF check failed: checkbox not TRUE', {
+      editedValue: editedValue,
+    });
+    return false;
+  }
+
+  RecordsRequests_log_('PDF check passed');
+  return true;
 }
 
-/**
- * Exports a RecReq sheet as a PDF and saves it to the provided Drive folder.
- *
- * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
- * @param {string} pdfName
- * @param {string} folderId
- * @returns {GoogleAppsScript.Drive.File}
- */
+
 function RecordsRequests_exportRecReqSheetAsPdf_(sheet, pdfName, folderId) {
   const spreadsheet = sheet.getParent();
   const spreadsheetId = spreadsheet.getId();
   const sheetId = sheet.getSheetId();
+
+  RecordsRequests_log_('Building PDF export URL', {
+    spreadsheetId: spreadsheetId,
+    sheetId: sheetId,
+    sheetName: sheet.getName(),
+  });
 
   const exportUrl =
     'https://docs.google.com/spreadsheets/d/' + spreadsheetId + '/export?' +
@@ -325,6 +400,9 @@ function RecordsRequests_exportRecReqSheetAsPdf_(sheet, pdfName, folderId) {
       // Page setup
       'size=letter',
       'portrait=true',
+
+      // Export only through row 44
+      'range=A1:D44',
 
       // Closest approximation of "Fit to page"
       'scale=4',
@@ -346,6 +424,10 @@ function RecordsRequests_exportRecReqSheetAsPdf_(sheet, pdfName, folderId) {
       'attachment=false'
     ].join('&');
 
+  RecordsRequests_log_('Fetching PDF export URL', {
+    exportUrl: exportUrl,
+  });
+
   const response = UrlFetchApp.fetch(exportUrl, {
     method: 'get',
     headers: {
@@ -356,7 +438,17 @@ function RecordsRequests_exportRecReqSheetAsPdf_(sheet, pdfName, folderId) {
 
   const responseCode = response.getResponseCode();
 
+  RecordsRequests_log_('PDF export response received', {
+    responseCode: responseCode,
+    contentType: response.getHeaders()['Content-Type'],
+  });
+
   if (responseCode !== 200) {
+    RecordsRequests_log_('PDF export returned non-200 response', {
+      responseCode: responseCode,
+      responseText: response.getContentText(),
+    });
+
     throw new Error(
       'PDF export failed. Response code: ' +
       responseCode +
@@ -369,55 +461,51 @@ function RecordsRequests_exportRecReqSheetAsPdf_(sheet, pdfName, folderId) {
     .getBlob()
     .setName(pdfName.endsWith('.pdf') ? pdfName : pdfName + '.pdf');
 
-  return DriveApp.getFolderById(folderId).createFile(pdfBlob);
+  RecordsRequests_log_('Creating PDF file in Drive folder', {
+    folderId: folderId,
+    pdfBlobName: pdfBlob.getName(),
+  });
+
+  const file = DriveApp.getFolderById(folderId).createFile(pdfBlob);
+
+  RecordsRequests_log_('Drive file created', {
+    fileId: file.getId(),
+    fileName: file.getName(),
+    fileUrl: file.getUrl(),
+  });
+
+  return file;
 }
 
-/**
- * Sanitizes a value for use as a PDF filename.
- *
- * @param {string} rawFileName
- * @returns {string}
- */
-function RecordsRequests_sanitizePdfFileName_(rawFileName) {
-  if (!rawFileName) return '';
 
-  return rawFileName
+function RecordsRequests_sanitizePdfFileName_(rawFileName) {
+  if (!rawFileName) {
+    RecordsRequests_log_('Filename sanitization received empty value');
+    return '';
+  }
+
+  const sanitizedFileName = rawFileName
     .toString()
     .trim()
     .replace(/[\\/:*?"<>|#%{}~&]/g, '-')
     .replace(/\s+/g, ' ');
+
+  RecordsRequests_log_('Filename sanitized', {
+    rawFileName: rawFileName,
+    sanitizedFileName: sanitizedFileName,
+  });
+
+  return sanitizedFileName;
 }
 
-const RECORDS_REQUESTS_PDF_CONFIG = {
-  sheetNamePrefix: 'RecReq',
-  checkboxA1: 'B47',
-  requiredCellA1: 'B5',
-  filenameCellA1: 'C1',
-  destinationFolderId: '1eOAv5hCciCS5RiEfRyXC2K3HiN3bbBZb',
-};
 
-/**
- * Installable on-edit handler for Records Requests functionality.
- *
- * Point your installable edit trigger to this function.
- *
- * @param {GoogleAppsScript.Events.SheetsOnEdit} e
- */
-function RecordsRequests_onEdit(e) {
-  RecordsRequests_handleRecReqReset_(e);
-  RecordsRequests_handleRecReqPdfExport_(e);
-
-  // Add future Records Requests edit handlers here.
-}
-
-/**
- * Shows a completion alert with links to the PDF and destination folder.
- *
- * @param {GoogleAppsScript.Drive.File} pdfFile
- * @param {string} folderId
- */
 function RecordsRequests_showPdfExportCompleteAlert_(pdfFile, folderId) {
   const folderUrl = 'https://drive.google.com/drive/folders/' + folderId;
+
+  RecordsRequests_log_('Showing PDF completion alert', {
+    pdfUrl: pdfFile.getUrl(),
+    folderUrl: folderUrl,
+  });
 
   const html = HtmlService
     .createHtmlOutput(
@@ -432,4 +520,34 @@ function RecordsRequests_showPdfExportCompleteAlert_(pdfFile, folderId) {
     html,
     'Records Request PDF Created'
   );
+}
+
+
+/***************************************
+ * Trigger setup
+ ***************************************/
+
+function RecordsRequests_createInstallableOnEditTrigger() {
+  const ss = SpreadsheetApp.getActive();
+
+  RecordsRequests_log_('Refreshing installable onEdit trigger');
+
+  ScriptApp.getProjectTriggers().forEach(function(trigger) {
+    if (trigger.getHandlerFunction() === 'RecordsRequests_onEdit') {
+      RecordsRequests_log_('Deleting existing RecordsRequests_onEdit trigger', {
+        triggerUniqueId: trigger.getUniqueId(),
+      });
+
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+
+  ScriptApp.newTrigger('RecordsRequests_onEdit')
+    .forSpreadsheet(ss)
+    .onEdit()
+    .create();
+
+  RecordsRequests_log_('Installable onEdit trigger created', {
+    spreadsheetId: ss.getId(),
+  });
 }
