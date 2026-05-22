@@ -4,21 +4,31 @@
 
 const RECORDS_REQUESTS_RESET_CONFIG = {
   sheetNamePrefix: 'RecReq',
-  checkboxA1: 'B46',
+
+  // Was B46 before row 10 was deleted
+  checkboxA1: 'B45',
+
   instructionColumn: 4,
   targetColumn: 2,
-  rowsToReset: [4, 5, 6, 9, 10, 11, 12, 27, 28, 29, 31, 32, 33],
+
+  // Row 10 was deleted.
+  // Original B10 is gone.
+  // Rows below old row 10 moved up by 1.
+  rowsToReset: [4, 5, 6, 9, 10, 11, 26, 27, 28, 30, 31, 32],
+
   clearInstructionText: 'Clear Value',
 };
 
 const RECORDS_REQUESTS_PDF_CONFIG = {
   sheetNamePrefix: 'RecReq',
-  checkboxA1: 'B47',
+
+  // Was B47 before row 10 was deleted
+  checkboxA1: 'B46',
+
   requiredCellA1: 'B5',
   filenameCellA1: 'C1',
   destinationFolderId: '1eOAv5hCciCS5RiEfRyXC2K3HiN3bbBZb',
 };
-
 
 /***************************************
  * Logging helper
@@ -402,7 +412,7 @@ function RecordsRequests_exportRecReqSheetAsPdf_(sheet, pdfName, folderId) {
       'portrait=true',
 
       // Export only through row 44
-      'range=A1:D44',
+      'range=A1:B43',
 
       // Closest approximation of "Fit to page"
       'scale=4',
@@ -501,20 +511,26 @@ function RecordsRequests_sanitizePdfFileName_(rawFileName) {
 
 function RecordsRequests_showPdfExportCompleteAlert_(pdfFile, folderId) {
   const folderUrl = 'https://drive.google.com/drive/folders/' + folderId;
+  const pdfUrl = pdfFile.getUrl();
+
+  // Direct download/export URL for the created PDF file.
+  const downloadUrl = 'https://drive.google.com/uc?export=download&id=' + pdfFile.getId();
 
   RecordsRequests_log_('Showing PDF completion alert', {
-    pdfUrl: pdfFile.getUrl(),
+    pdfUrl: pdfUrl,
+    downloadUrl: downloadUrl,
     folderUrl: folderUrl,
   });
 
   const html = HtmlService
     .createHtmlOutput(
       '<p>The PDF has been created successfully.</p>' +
-      '<p><a href="' + pdfFile.getUrl() + '" target="_blank">Open PDF</a></p>' +
+      '<p><a href="' + pdfUrl + '" target="_blank">Open PDF</a></p>' +
+      '<p><a href="' + downloadUrl + '" target="_blank">Download PDF</a></p>' +
       '<p><a href="' + folderUrl + '" target="_blank">Open destination folder</a></p>'
     )
-    .setWidth(360)
-    .setHeight(180);
+    .setWidth(380)
+    .setHeight(210);
 
   SpreadsheetApp.getUi().showModalDialog(
     html,
