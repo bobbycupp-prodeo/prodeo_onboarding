@@ -2,34 +2,29 @@
  * dataUpdates.gs
  *
  * Adds new SM Student IDs from sm_reg to
- * the first available blank rows in Incoming!A:A.
+ * the first available blank rows in 
+ * CH-Incoming!A:A or SP-Incoming!A:A based on Campus.
  *
  * Intended for time-driven trigger use.
  ***************************************/
 
 const DATA_UPDATES_CONFIG = {
   sourceSheetName: 'sm_reg',
-  targetSheetName: 'Incoming',
+  targetSheetSuffix: '-Incoming', // Used to build 'CH-Incoming', 'SP-Incoming'
   sourceHeaderRow: 2,
   targetHeaderRow: 2,
   targetStartRow: 3,
   sourceIdHeader: 'SM Student ID',
+  sourceCampusHeader: 'Campus', // New config to locate the Campus column
   targetIdColumn: 1 // Column A
 };
 
 function dataUpdates_addNewStudentIdsToIncoming() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-
   const sourceSheet = ss.getSheetByName(DATA_UPDATES_CONFIG.sourceSheetName);
-  const targetSheet = ss.getSheetByName(DATA_UPDATES_CONFIG.targetSheetName);
 
   if (!sourceSheet) {
     Logger.log(`Source sheet not found: ${DATA_UPDATES_CONFIG.sourceSheetName}`);
-    return;
-  }
-
-  if (!targetSheet) {
-    Logger.log(`Target sheet not found: ${DATA_UPDATES_CONFIG.targetSheetName}`);
     return;
   }
 
@@ -41,62 +36,89 @@ function dataUpdates_addNewStudentIdsToIncoming() {
     DATA_UPDATES_CONFIG.sourceIdHeader
   );
 
-  if (!sourceIdColumn) {
-    Logger.log(`Header not found in ${DATA_UPDATES_CONFIG.sourceSheetName}: ${DATA_UPDATES_CONFIG.sourceIdHeader}`);
+  const sourceCampusColumn = dataUpdates_getColumnByHeader_(
+    sourceSheet,
+    DATA_UPDATES_CONFIG.sourceHeaderRow,
+    DATA_UPDATES_CONFIG.sourceCampusHeader
+  );
+
+  if (!sourceIdColumn || !sourceCampusColumn) {
+    Logger.log(`Required headers not found in ${DATA_UPDATES_CONFIG.sourceSheetName}.`);
     return;
   }
 
-  const sourceIds = dataUpdates_getSourceIds_(
+  const sourceRecords = dataUpdates_getSourceRecords_(
     sourceSheet,
     DATA_UPDATES_CONFIG.sourceHeaderRow + 1,
-    sourceIdColumn
+    sourceIdColumn,
+    sourceCampusColumn
   );
 
-  if (sourceIds.length === 0) {
-    Logger.log('No source IDs found.');
+  if (sourceRecords.length === 0) {
+    Logger.log('No valid source records found.');
     return;
   }
 
-  Logger.log(`Found ${sourceIds.length} unique IDs in ${DATA_UPDATES_CONFIG.sourceSheetName}.`);
+  // Group the retrieved IDs by campus
+  const recordsByCampus = {};
+  sourceRecords.forEach(record => {
+    const campus = record.campus;
+    if (!recordsByCampus[campus]) {
+      recordsByCampus[campus] = [];
+    }
+    recordsByCampus[campus].push(record.id);
+  });
 
-  const existingTargetIds = dataUpdates_getExistingTargetIds_(
-    targetSheet,
-    DATA_UPDATES_CONFIG.targetStartRow,
-    DATA_UPDATES_CONFIG.targetIdColumn
-  );
+  // Process and write new IDs for each campus individually
+  for (const campus in recordsByCampus) {
+    const targetSheetName = `${campus}${DATA_UPDATES_CONFIG.targetSheetSuffix}`;
+    const targetSheet = ss.getSheetByName(targetSheetName);
+    
+    if (!targetSheet) {
+      Logger.log(`Target sheet not found: ${targetSheetName}. Skipping campus ${campus}.`);
+      continue;
+    }
 
-  Logger.log(`Found ${existingTargetIds.size} existing IDs in ${DATA_UPDATES_CONFIG.targetSheetName}.`);
+    const campusIds = recordsByCampus[campus];
+    Logger.log(`Processing ${campusIds.length} unique IDs for ${targetSheetName}.`);
 
-  const newIds = sourceIds.filter(id => !existingTargetIds.has(id));
+    const existingTargetIds = dataUpdates_getExistingTargetIds_(
+      targetSheet,
+      DATA_UPDATES_CONFIG.targetStartRow,
+      DATA_UPDATES_CONFIG.targetIdColumn
+    );
 
-  if (newIds.length === 0) {
-    Logger.log('No new IDs to add.');
-    return;
+    const newIds = campusIds.filter(id => !existingTargetIds.has(id));
+
+    if (newIds.length === 0) {
+      Logger.log(`No new IDs to add for ${targetSheetName}.`);
+      continue;
+    }
+
+    Logger.log(`Found ${newIds.length} new IDs to add to ${targetSheetName}.`);
+
+    const firstEmptyRow = dataUpdates_findFirstEmptyCellInColumn_(
+      targetSheet,
+      DATA_UPDATES_CONFIG.targetStartRow,
+      DATA_UPDATES_CONFIG.targetIdColumn
+    );
+
+    const today = new Date();
+    const valuesToWrite = newIds.map(id => [id, today]);
+
+    // Write the new IDs to the target sheet
+    targetSheet
+      .getRange(firstEmptyRow, DATA_UPDATES_CONFIG.targetIdColumn, valuesToWrite.length, 2)
+      .setValues(valuesToWrite);
+
+    // Format the date column
+    targetSheet
+      .getRange(firstEmptyRow, 2, valuesToWrite.length, 1)
+      .setNumberFormat('M/d/yyyy');
+
+    Logger.log(`Added ${newIds.length} new IDs to ${targetSheetName}.`);
   }
 
-  Logger.log(`Found ${newIds.length} new IDs to add.`);
-
-  const firstEmptyRow = dataUpdates_findFirstEmptyCellInColumn_(
-    targetSheet,
-    DATA_UPDATES_CONFIG.targetStartRow,
-    DATA_UPDATES_CONFIG.targetIdColumn
-  );
-
-  Logger.log(`First empty row in Incoming column A is row ${firstEmptyRow}.`);
-
-  const today = new Date();
-
-  const valuesToWrite = newIds.map(id => [id, today]);
-
-  targetSheet
-    .getRange(firstEmptyRow, DATA_UPDATES_CONFIG.targetIdColumn, valuesToWrite.length, 2)
-    .setValues(valuesToWrite);
-
-  targetSheet
-    .getRange(firstEmptyRow, 2, valuesToWrite.length, 1)
-    .setNumberFormat('M/d/yyyy');
-
-  Logger.log(`Added ${newIds.length} new IDs to ${DATA_UPDATES_CONFIG.targetSheetName}.`);
   Logger.log('Student ID update complete.');
 }
 
@@ -105,32 +127,23 @@ function dataUpdates_addNewStudentIdsToIncoming() {
  */
 function dataUpdates_getColumnByHeader_(sheet, headerRow, headerName) {
   const lastColumn = sheet.getLastColumn();
-
-  const headers = sheet
-    .getRange(headerRow, 1, 1, lastColumn)
-    .getValues()[0];
-
+  const headers = sheet.getRange(headerRow, 1, 1, lastColumn).getValues()[0];
   const normalizedHeaderName = String(headerName).trim().toLowerCase();
 
   for (let i = 0; i < headers.length; i++) {
     const currentHeader = String(headers[i]).trim().toLowerCase();
-
     if (currentHeader === normalizedHeaderName) {
       return i + 1;
     }
   }
-
   return null;
 }
 
-
 /**
- * Gets unique, nonblank IDs from the source ID column.
+ * Gets unique, nonblank records (ID and Campus) from the source sheet.
  * Skips students marked "Withdrawn" in column G.
- *
- * getLastRow() is acceptable here because sm_reg is the source data sheet.
  */
-function dataUpdates_getSourceIds_(sheet, startRow, idColumn) {
+function dataUpdates_getSourceRecords_(sheet, startRow, idColumn, campusColumn) {
   const lastRow = sheet.getLastRow();
 
   if (lastRow < startRow) {
@@ -140,24 +153,19 @@ function dataUpdates_getSourceIds_(sheet, startRow, idColumn) {
   const numRows = lastRow - startRow + 1;
   const statusColumn = 7; // Column G
 
-  const idValues = sheet
-    .getRange(startRow, idColumn, numRows, 1)
-    .getValues()
-    .flat();
-
-  const statusValues = sheet
-    .getRange(startRow, statusColumn, numRows, 1)
-    .getValues()
-    .flat();
+  const idValues = sheet.getRange(startRow, idColumn, numRows, 1).getValues().flat();
+  const statusValues = sheet.getRange(startRow, statusColumn, numRows, 1).getValues().flat();
+  const campusValues = sheet.getRange(startRow, campusColumn, numRows, 1).getValues().flat();
 
   const seen = new Set();
-  const ids = [];
+  const records = [];
 
   idValues.forEach((value, index) => {
     const id = String(value).trim();
     const status = String(statusValues[index]).trim().toLowerCase();
+    const campus = String(campusValues[index]).trim().toUpperCase();
 
-    if (!id) {
+    if (!id || !campus) {
       return;
     }
 
@@ -168,22 +176,18 @@ function dataUpdates_getSourceIds_(sheet, startRow, idColumn) {
 
     if (!seen.has(id)) {
       seen.add(id);
-      ids.push(id);
+      records.push({ id: id, campus: campus });
     }
   });
 
-  return ids;
+  return records;
 }
 
 /**
- * Gets existing IDs from Incoming column A.
- *
- * This intentionally scans column A starting at row 3 and does not rely on
- * getLastRow(), because Incoming has formulas in many rows/columns.
+ * Gets existing IDs from the incoming sheet's column A.
  */
 function dataUpdates_getExistingTargetIds_(sheet, startRow, idColumn) {
   const maxRows = sheet.getMaxRows();
-
   if (maxRows < startRow) {
     return new Set();
   }
@@ -194,10 +198,8 @@ function dataUpdates_getExistingTargetIds_(sheet, startRow, idColumn) {
     .flat();
 
   const ids = new Set();
-
   values.forEach(value => {
     const id = String(value).trim();
-
     if (id) {
       ids.add(id);
     }
@@ -208,18 +210,14 @@ function dataUpdates_getExistingTargetIds_(sheet, startRow, idColumn) {
 
 /**
  * Finds the first blank cell in a specific column, starting at startRow.
- *
- * This does not use getLastRow().
  */
 function dataUpdates_findFirstEmptyCellInColumn_(sheet, startRow, column) {
   const maxRows = sheet.getMaxRows();
-
   if (maxRows < startRow) {
     sheet.insertRowsAfter(maxRows, startRow - maxRows);
   }
 
   const refreshedMaxRows = sheet.getMaxRows();
-
   const values = sheet
     .getRange(startRow, column, refreshedMaxRows - startRow + 1, 1)
     .getValues()
@@ -227,13 +225,11 @@ function dataUpdates_findFirstEmptyCellInColumn_(sheet, startRow, column) {
 
   for (let i = 0; i < values.length; i++) {
     const value = String(values[i]).trim();
-
     if (!value) {
       return startRow + i;
     }
   }
 
   sheet.insertRowsAfter(refreshedMaxRows, 100);
-
   return refreshedMaxRows + 1;
 }
