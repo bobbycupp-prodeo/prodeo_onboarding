@@ -2,10 +2,10 @@
  * addressCleanup.gs
  *
  * Reads AM and PM raw address data from sm_reg
- * Skips processing if the street is blank or the destination is already filled
- * Uses Gemini to standardize the addresses based on strict Minneapolis/Saint Paul rules
+ * Uses Google Maps Geocoding to find exact real-world address AND Geocode
  * Copies AM to PM if the house number and street name start match
- * Writes the corrected addresses to DJ and DK
+ * Writes the corrected addresses to DJ/DK and Geocodes to DL/DM
+ * Re-checks addresses if they are flagged with <FIX IN SCHOOLMINT>
  ***************************************/
 
 const ADDRESS_CLEANUP_CONFIG = {
@@ -13,19 +13,21 @@ const ADDRESS_CLEANUP_CONFIG = {
   startRow: 2,
   
   // AM Columns
-  colAmStreet: 49, // AW
-  colAmCity: 50,   // AX
-  colAmZip: 52,    // AZ
-  colAmOutput: 114,// DJ
+  colAmStreet: 49,  // AW
+  colAmCity: 50,    // AX
+  colAmZip: 52,     // AZ
+  colAmOutput: 114, // DJ
+  colAmGeocode: 116,// DL
 
   // PM Columns
-  colPmStreet: 53, // BA
-  colPmCity: 54,   // BB
-  colPmZip: 55,    // BC
-  colPmOutput: 115,// DK
-  
-  modelId: 'gemini-3.5-flash'
+  colPmStreet: 53,  // BA
+  colPmCity: 54,    // BB
+  colPmZip: 55,     // BC
+  colPmOutput: 115, // DK
+  colPmGeocode: 117 // DM
 };
+
+const ERROR_FLAG = "<FIX IN SCHOOLMINT>";
 
 function cleanAddresses() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -55,68 +57,86 @@ function cleanAddresses() {
   
   const amOutputRange = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colAmOutput, numRows, 1);
   const amOutputVals = amOutputRange.getValues();
+  const amGeocodeRange = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colAmGeocode, numRows, 1);
+  const amGeocodeVals = amGeocodeRange.getValues();
   
   const pmOutputRange = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colPmOutput, numRows, 1);
   const pmOutputVals = pmOutputRange.getValues();
+  const pmGeocodeRange = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colPmGeocode, numRows, 1);
+  const pmGeocodeVals = pmGeocodeRange.getValues();
 
   let amUpdatesMade = false;
   let pmUpdatesMade = false;
 
   for (let i = 0; i < numRows; i++) {
-    // Establish AM Variables
+    // ------------------------------------
+    // Process AM Address
+    // ------------------------------------
     const amStreet = String(amStreetVals[i][0]).trim();
-    const amCity = String(amCityVals[i][0]).trim();
-    const amZip = String(amZipVals[i][0]).trim();
     const amExistingOut = String(amOutputVals[i][0]).trim();
-    // If city is blank, default to "Twin Cities Metro" to anchor the Google Maps search
-    const amSearchCity = amCity ? amCity : "Twin Cities Metro";
-    const amRawAddress = `${amStreet}, ${amSearchCity}, MN ${amZip}`.trim();
     
-    // --- Process AM Address ---
-    if (amStreet && amExistingOut === "") {
+    // Process if it is blank OR if it was previously flagged as an error
+    if (amStreet && (amExistingOut === "" || amExistingOut === ERROR_FLAG)) {
+      const amCity = String(amCityVals[i][0]).trim();
+      const amZip = String(amZipVals[i][0]).trim();
+      
+      const amSearchCity = amCity ? amCity : "Twin Cities Metro";
+      const amRawAddress = `${amStreet}, ${amSearchCity}, MN ${amZip}`.trim();
+      
       try {
-        const amCleaned = verifyAddressWithMaps_(amRawAddress);
-        if (amCleaned) {
-          amOutputVals[i][0] = amCleaned;
-          amUpdatesMade = true;
-          Logger.log(`Row ${i + ADDRESS_CLEANUP_CONFIG.startRow} (AM): ${amCleaned}`);
-          Utilities.sleep(1000); // Respect rate limits
+        const amResult = verifyAddressWithMaps_(amRawAddress);
+        if (amResult) {
+          // Check if we are updating an existing value or error flag to save unnecessary writes
+          if (amOutputVals[i][0] !== amResult.address || amGeocodeVals[i][0] !== amResult.geocode) {
+            amOutputVals[i][0] = amResult.address;
+            amGeocodeVals[i][0] = amResult.geocode;
+            amUpdatesMade = true;
+          }
+          Logger.log(`Row ${i + ADDRESS_CLEANUP_CONFIG.startRow} (AM): ${amResult.address}`);
+          Utilities.sleep(1000); 
         }
       } catch (e) {
         Logger.log(`Error on row ${i + ADDRESS_CLEANUP_CONFIG.startRow} (AM): ${e.message}`);
       }
     }
 
-    // Establish PM Variables
+    // ------------------------------------
+    // Process PM Address
+    // ------------------------------------
     const pmStreet = String(pmStreetVals[i][0]).trim();
-    const pmCity = String(pmCityVals[i][0]).trim();
-    const pmZip = String(pmZipVals[i][0]).trim();
     const pmExistingOut = String(pmOutputVals[i][0]).trim();
-    // If city is blank, default to "Twin Cities Metro" to anchor the Google Maps search
-    const pmSearchCity = pmCity ? pmCity : "Twin Cities Metro";
-    const pmRawAddress = `${pmStreet}, ${pmSearchCity}, MN ${pmZip}`.trim();
     
-    // --- Process PM Address ---
-    if (pmStreet && pmExistingOut === "") {
-      
-      // Optimization: Check if PM address shares the same house number and street name
+    // Process if it is blank OR if it was previously flagged as an error
+    if (pmStreet && (pmExistingOut === "" || pmExistingOut === ERROR_FLAG)) {
       const isSameAsAm = isSubstantiallySame_(amStreet, pmStreet);
-      const currentAmOutput = String(amOutputVals[i][0]).trim(); // Gets the pre-existing OR newly cleaned AM address
+      const currentAmOutput = String(amOutputVals[i][0]).trim(); 
+      const currentAmGeocode = String(amGeocodeVals[i][0]).trim();
       
+      // If addresses match, copy from AM (this includes copying the ERROR_FLAG if AM failed)
       if (isSameAsAm && currentAmOutput) {
-        // Just copy the result over
-        pmOutputVals[i][0] = currentAmOutput;
-        pmUpdatesMade = true;
+        if (pmOutputVals[i][0] !== currentAmOutput || pmGeocodeVals[i][0] !== currentAmGeocode) {
+          pmOutputVals[i][0] = currentAmOutput;
+          pmGeocodeVals[i][0] = currentAmGeocode;
+          pmUpdatesMade = true;
+        }
         Logger.log(`Row ${i + ADDRESS_CLEANUP_CONFIG.startRow} (PM): Skipped API, copied from AM -> ${currentAmOutput}`);
       } else {
-        // Call the API if they are different
+        const pmCity = String(pmCityVals[i][0]).trim();
+        const pmZip = String(pmZipVals[i][0]).trim();
+        
+        const pmSearchCity = pmCity ? pmCity : "Twin Cities Metro";
+        const pmRawAddress = `${pmStreet}, ${pmSearchCity}, MN ${pmZip}`.trim();
+        
         try {
-          const pmCleaned = verifyAddressWithMaps_(pmRawAddress);
-          if (pmCleaned) {
-            pmOutputVals[i][0] = pmCleaned;
-            pmUpdatesMade = true;
-            Logger.log(`Row ${i + ADDRESS_CLEANUP_CONFIG.startRow} (PM): ${pmCleaned}`);
-            Utilities.sleep(1000); // Respect rate limits
+          const pmResult = verifyAddressWithMaps_(pmRawAddress);
+          if (pmResult) {
+            if (pmOutputVals[i][0] !== pmResult.address || pmGeocodeVals[i][0] !== pmResult.geocode) {
+              pmOutputVals[i][0] = pmResult.address;
+              pmGeocodeVals[i][0] = pmResult.geocode;
+              pmUpdatesMade = true;
+            }
+            Logger.log(`Row ${i + ADDRESS_CLEANUP_CONFIG.startRow} (PM): ${pmResult.address}`);
+            Utilities.sleep(1000); 
           }
         } catch (e) {
           Logger.log(`Error on row ${i + ADDRESS_CLEANUP_CONFIG.startRow} (PM): ${e.message}`);
@@ -128,11 +148,13 @@ function cleanAddresses() {
   // Write all new addresses back to the sheet at once
   if (amUpdatesMade) {
     amOutputRange.setValues(amOutputVals);
-    Logger.log("AM Addresses written to sheet.");
+    amGeocodeRange.setValues(amGeocodeVals);
+    Logger.log("AM Addresses & Geocodes written to sheet.");
   }
   if (pmUpdatesMade) {
     pmOutputRange.setValues(pmOutputVals);
-    Logger.log("PM Addresses written to sheet.");
+    pmGeocodeRange.setValues(pmGeocodeVals);
+    Logger.log("PM Addresses & Geocodes written to sheet.");
   }
   
   if (!amUpdatesMade && !pmUpdatesMade) {
@@ -142,111 +164,156 @@ function cleanAddresses() {
 
 /**
  * Checks if two raw street addresses are substantially the same
- * by comparing the house number and the first 3 letters of the street name.
  */
 function isSubstantiallySame_(amStr, pmStr) {
   if (!amStr || !pmStr) return false;
-  
-  // Split by any whitespace
   const amParts = String(amStr).trim().toLowerCase().split(/\s+/);
   const pmParts = String(pmStr).trim().toLowerCase().split(/\s+/);
-  
   if (amParts.length < 1 || pmParts.length < 1) return false;
   
-  // Compare the first part (e.g., "1234")
   const firstPartMatches = amParts[0] === pmParts[0];
-  
-  // Compare the first 3 characters of the second part (e.g., "mai" for "Main")
   const amSecondPart = (amParts[1] || "").substring(0, 3);
   const pmSecondPart = (pmParts[1] || "").substring(0, 3);
   const secondPartMatches = amSecondPart === pmSecondPart;
   
   return firstPartMatches && secondPartMatches;
 }
+
 /**
  * Helper function to verify and clean addresses using Google Maps Data
+ * Returns an object with the formatted address and the Lat/Long geocode.
  */
 function verifyAddressWithMaps_(rawAddress) {
-  // Use Google's built-in geocoder to find the real address
   const response = Maps.newGeocoder().geocode(rawAddress);
   
   if (response.status === 'OK' && response.results.length > 0) {
     const result = response.results[0];
     
-    // Check if Google found a precise building (ROOFTOP or RANGE_INTERPOLATED)
-    // If it's APPROXIMATE, it means it only found the street or city (no house number)
     if (result.geometry.location_type === 'ROOFTOP' || result.geometry.location_type === 'RANGE_INTERPOLATED') {
       
       let streetNum = "", route = "", city = "", state = "", zip = "";
       
-      // Extract exactly what we want, completely ignoring unit/apartment numbers
       result.address_components.forEach(comp => {
         if (comp.types.includes("street_number")) streetNum = comp.short_name;
-        if (comp.types.includes("route")) route = comp.short_name; // e.g., "Main St"
+        if (comp.types.includes("route")) route = comp.short_name; 
         if (comp.types.includes("locality") || comp.types.includes("neighborhood")) city = comp.long_name;
         if (comp.types.includes("administrative_area_level_1")) state = comp.short_name;
         if (comp.types.includes("postal_code")) zip = comp.short_name;
       });
       
-      // Ensure we have the minimum required pieces of a valid address
       if (streetNum && route && city && zip) {
-        // Formats perfectly to Title Case, extracting the real city and zip!
-        return `${streetNum} ${route}, ${city}, ${state} ${zip}`;
+        const formattedAddress = `${streetNum} ${route}, ${city}, ${state} ${zip}`;
+        const geocode = `${result.geometry.location.lat}, ${result.geometry.location.lng}`;
+        
+        return {
+          address: formattedAddress,
+          geocode: geocode
+        };
       }
     }
   }
   
-  // If it failed to find an exact match (e.g. missing house number or bad spelling), flag it
-  return "<NEED VERIFICATION>";
+  // If it failed to find an exact match, output the new error flag
+  return {
+    address: ERROR_FLAG,
+    geocode: ""
+  };
 }
-// /**
-//  * Helper function to call the Gemini API
-//  */
-// function callGeminiToCleanAddress_(rawAddress) {
-//   const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
-  
-//   if (!apiKey) {
-//     throw new Error("GEMINI_API_KEY not found in Script Properties. Please add it via Project Settings.");
-//   }
 
-//   const url = `https://generativelanguage.googleapis.com/v1beta/models/${ADDRESS_CLEANUP_CONFIG.modelId}:generateContent?key=${apiKey}`;
+/**
+ * A utility function to fetch geocodes for addresses 
+ * that were already cleaned prior to the geocode script update.
+ */
+function catchUpGeocodes() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(ADDRESS_CLEANUP_CONFIG.sheetName);
   
-//  const prompt = `You are a strict data standardization assistant. 
-//   Take the following raw address and format it into a clean, standardized format on a single line. 
-//   All addresses are in the Minneapolis/Saint Paul metro area, so addresses without a clear city or zip should be determined with that in mind.
-//   Ignore any unit numbers or apartment numbers. We only want street addresses.
-//   Fix any obvious spelling errors in the city name. 
-//   CRITICAL: Use Title Case for the street and city (e.g., "123 Main St, Minneapolis, MN 55401"). Do not use ALL CAPS.
-//   DO NOT output any conversational text, explanations, or markdown formatting. ONLY return the standardized address string.
+  if (!sheet) {
+    Logger.log(`Sheet not found: ${ADDRESS_CLEANUP_CONFIG.sheetName}`);
+    return;
+  }
   
-//   Raw Address: ${rawAddress}`;
+  const lastRow = sheet.getLastRow();
+  if (lastRow < ADDRESS_CLEANUP_CONFIG.startRow) return;
+
+  const numRows = lastRow - ADDRESS_CLEANUP_CONFIG.startRow + 1;
   
-//   const payload = {
-//     "contents": [{
-//       "parts": [{"text": prompt}]
-//     }],
-//     "generationConfig": {
-//       "temperature": 0.1 
-//     }
-//   };
+  // Notice we reuse the columns from ADDRESS_CLEANUP_CONFIG
+  const amAddressVals = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colAmOutput, numRows, 1).getValues();
+  const amGeocodeRange = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colAmGeocode, numRows, 1);
+  const amGeocodeVals = amGeocodeRange.getValues();
   
-//   const options = {
-//     "method": "post",
-//     "contentType": "application/json",
-//     "payload": JSON.stringify(payload),
-//     "muteHttpExceptions": true
-//   };
+  const pmAddressVals = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colPmOutput, numRows, 1);
+  const pmGeocodeRange = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colPmGeocode, numRows, 1);
+  const pmGeocodeVals = pmGeocodeRange.getValues();
+
+  let amUpdatesMade = false;
+  let pmUpdatesMade = false;
+
+  for (let i = 0; i < numRows; i++) {
+    const amAddress = String(amAddressVals[i][0]).trim();
+    const existingAmGeocode = String(amGeocodeVals[i][0]).trim();
+    
+    if (amAddress && amAddress !== ERROR_FLAG && existingAmGeocode === "") {
+      try {
+        const geo = getGeocodeOnly_(amAddress);
+        if (geo) {
+          amGeocodeVals[i][0] = geo;
+          amUpdatesMade = true;
+          Logger.log(`Row ${i + ADDRESS_CLEANUP_CONFIG.startRow} (AM Geocode): ${geo}`);
+          Utilities.sleep(500); 
+        }
+      } catch (e) {
+        Logger.log(`Error on row ${i + ADDRESS_CLEANUP_CONFIG.startRow} (AM): ${e.message}`);
+      }
+    }
+
+    const pmAddress = String(pmAddressVals[i][0]).trim();
+    const existingPmGeocode = String(pmGeocodeVals[i][0]).trim();
+
+    if (pmAddress && pmAddress !== ERROR_FLAG && existingPmGeocode === "") {
+      const currentAmGeo = String(amGeocodeVals[i][0]).trim();
+      
+      if (pmAddress === amAddress && currentAmGeo !== "") {
+        pmGeocodeVals[i][0] = currentAmGeo;
+        pmUpdatesMade = true;
+        Logger.log(`Row ${i + ADDRESS_CLEANUP_CONFIG.startRow} (PM Geocode): Copied from AM -> ${currentAmGeo}`);
+      } else {
+        try {
+          const geo = getGeocodeOnly_(pmAddress);
+          if (geo) {
+            pmGeocodeVals[i][0] = geo;
+            pmUpdatesMade = true;
+            Logger.log(`Row ${i + ADDRESS_CLEANUP_CONFIG.startRow} (PM Geocode): ${geo}`);
+            Utilities.sleep(500); 
+          }
+        } catch (e) {
+          Logger.log(`Error on row ${i + ADDRESS_CLEANUP_CONFIG.startRow} (PM): ${e.message}`);
+        }
+      }
+    }
+  }
+
+  if (amUpdatesMade) {
+    amGeocodeRange.setValues(amGeocodeVals);
+    Logger.log("AM Geocodes written to sheet.");
+  }
+  if (pmUpdatesMade) {
+    pmGeocodeRange.setValues(pmGeocodeVals);
+    Logger.log("PM Geocodes written to sheet.");
+  }
+}
+
+/**
+ * Helper function purely for fetching Lat/Lng strings
+ */
+function getGeocodeOnly_(address) {
+  const response = Maps.newGeocoder().geocode(address);
   
-//   const response = UrlFetchApp.fetch(url, options);
-//   const json = JSON.parse(response.getContentText());
+  if (response.status === 'OK' && response.results.length > 0) {
+    const location = response.results[0].geometry.location;
+    return `${location.lat}, ${location.lng}`;
+  }
   
-//   if (json.error) {
-//      throw new Error(json.error.message);
-//   }
-  
-//   if (json.candidates && json.candidates.length > 0) {
-//     return json.candidates[0].content.parts[0].text.trim().replace(/\n/g, ""); 
-//   }
-  
-//   return null;
-// }
+  return "NOT FOUND";
+}
