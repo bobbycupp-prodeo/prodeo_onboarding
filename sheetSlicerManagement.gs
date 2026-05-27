@@ -318,18 +318,20 @@ function normalizeTabColor_(color) {
  ****************************************************/
 
 /**
- * Dynamically reads target sheet names from Column J of sheet_slicer_management,
- * scans them for slicers, and refreshes the inventory list in Columns I:J.
+ * Dynamically reads target sheet names from Column L of sheet_slicer_management,
+ * scans them for slicers, and refreshes the inventory list in Columns I:K.
  *
  * Column I: Slicer Name
  * Column J: Sheet Name
- * Column K: Target Cell, manually maintained
+ * Column K: Current Anchor Cell
+ * Column L: Source sheet names to scan
  */
 function inventoryAllSlicers() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const ui = SpreadsheetApp.getUi();
 
   const mgmtSheet = ss.getSheetByName(MANAGEMENT_SHEET_NAME);
+  const SLICER_SOURCE_SHEET_COL = 12; // L
 
   if (!mgmtSheet) {
     ui.alert(
@@ -344,21 +346,22 @@ function inventoryAllSlicers() {
 
   if (lastRow < START_ROW) {
     ui.alert(
-      "No Sheets Listed",
-      "Please list your target sheet names in Column J, starting at Row 2, before scanning.",
+      "No Source Sheets Listed",
+      "Please list your source sheet names in Column L, starting at Row 2, before scanning.",
       ui.ButtonSet.OK
     );
     return;
   }
 
-  // Read existing sheet names from Column J.
-  const sheetNameValues = mgmtSheet
-    .getRange(START_ROW, SLICER_SHEET_COL, lastRow - START_ROW + 1, 1)
+  // Read source sheet names from Column L.
+  // Column L is intentionally separate from the output range I:K.
+  const sourceSheetValues = mgmtSheet
+    .getRange(START_ROW, SLICER_SOURCE_SHEET_COL, lastRow - START_ROW + 1, 1)
     .getValues();
 
   const sheetsToScan = [];
 
-  sheetNameValues.forEach(row => {
+  sourceSheetValues.forEach(row => {
     const sheetName = String(row[0]).trim();
 
     if (sheetName && sheetsToScan.indexOf(sheetName) === -1) {
@@ -368,16 +371,17 @@ function inventoryAllSlicers() {
 
   if (sheetsToScan.length === 0) {
     ui.alert(
-      "No Sheets Listed",
-      "Column J does not contain any valid sheet names to scan.",
+      "No Source Sheets Listed",
+      "Column L does not contain any valid sheet names to scan.",
       ui.ButtonSet.OK
     );
     return;
   }
 
-  // Clear only Columns I:J. Preserve Column K target-cell assignments.
+  // Clear only Columns I:K.
+  // Column L remains untouched because it is the persistent source list.
   mgmtSheet
-    .getRange(START_ROW, SLICER_NAME_COL, lastRow - START_ROW + 1, 2)
+    .getRange(START_ROW, SLICER_NAME_COL, lastRow - START_ROW + 1, 3)
     .clearContent();
 
   const outputData = [];
@@ -393,26 +397,34 @@ function inventoryAllSlicers() {
     const slicers = targetSheet.getSlicers();
 
     slicers.forEach(slicer => {
+      const containerInfo = slicer.getContainerInfo();
+      const anchorRow = containerInfo.getAnchorRow();
+      const anchorCol = containerInfo.getAnchorColumn();
+      const anchorCellA1 = targetSheet
+        .getRange(anchorRow, anchorCol)
+        .getA1Notation();
+
       outputData.push([
         slicer.getTitle(),
-        sheetName
+        sheetName,
+        anchorCellA1
       ]);
     });
   });
 
   if (outputData.length > 0) {
     mgmtSheet
-      .getRange(START_ROW, SLICER_NAME_COL, outputData.length, 2)
+      .getRange(START_ROW, SLICER_NAME_COL, outputData.length, 3)
       .setValues(outputData);
 
     ss.toast(
-      `Successfully inventoried ${outputData.length} slicer(s).`,
+      `Successfully inventoried ${outputData.length} slicer(s), including current locations.`,
       "Scan Complete",
       4
     );
   } else {
     ss.toast(
-      "No slicers were found on the sheets listed in Column J.",
+      "No slicers were found on the sheets listed in Column L.",
       "Scan Complete",
       3
     );
@@ -424,33 +436,27 @@ function inventoryAllSlicers() {
  * Reads settings from sheet_slicer_management to dynamically find and snap
  * slicers to assigned cell coordinates.
  *
+ * Trigger-safe version:
+ * - Does not call SpreadsheetApp.getUi()
+ * - Uses Logger.log() instead of UI alerts
+ *
  * Column I: Slicer Name
  * Column J: Sheet Name
  * Column K: Target Cell
  */
 function alignSlicersFromConfig() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const ui = SpreadsheetApp.getUi();
-
   const mgmtSheet = ss.getSheetByName(MANAGEMENT_SHEET_NAME);
 
   if (!mgmtSheet) {
-    ui.alert(
-      "Layout Configuration Error",
-      `Could not find the sheet named "${MANAGEMENT_SHEET_NAME}".`,
-      ui.ButtonSet.OK
-    );
+    Logger.log(`Layout Configuration Error: Could not find the sheet named "${MANAGEMENT_SHEET_NAME}".`);
     return;
   }
 
   const lastRow = mgmtSheet.getLastRow();
 
   if (lastRow < START_ROW) {
-    ui.alert(
-      "Empty Configuration",
-      "No slicer layout configuration found starting at Row 2.",
-      ui.ButtonSet.OK
-    );
+    Logger.log("Empty Configuration: No slicer layout configuration found starting at Row 2.");
     return;
   }
 
@@ -525,4 +531,6 @@ function alignSlicersFromConfig() {
     "Alignment Complete",
     3
   );
+
+  Logger.log(`Successfully aligned ${matchCount} slicer(s).`);
 }

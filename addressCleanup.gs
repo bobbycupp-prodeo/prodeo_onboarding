@@ -10,21 +10,21 @@
 
 const ADDRESS_CLEANUP_CONFIG = {
   sheetName: 'sm_reg',
-  startRow: 2,
+  startRow: 3,
   
   // AM Columns
   colAmStreet: 49,  // AW
   colAmCity: 50,    // AX
-  colAmZip: 52,     // AZ
-  colAmOutput: 114, // DJ
-  colAmGeocode: 116,// DL
+  colAmZip: 51,     // AY
+  colAmOutput: 119, // DO
+  colAmGeocode: 121,// DQ
 
   // PM Columns
   colPmStreet: 53,  // BA
   colPmCity: 54,    // BB
   colPmZip: 55,     // BC
-  colPmOutput: 115, // DK
-  colPmGeocode: 117 // DM
+  colPmOutput: 120, // DP
+  colPmGeocode: 122 // DR
 };
 
 const ERROR_FLAG = "<FIX IN SCHOOLMINT>";

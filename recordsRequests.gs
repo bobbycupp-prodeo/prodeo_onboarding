@@ -548,10 +548,20 @@ function RecordsRequests_createInstallableOnEditTrigger() {
 
   RecordsRequests_log_('Refreshing installable onEdit trigger');
 
+  const recordsRequestTriggerFunctions = [
+    'RecordsRequests_onEdit',
+
+    // Old trigger function names to clean up
+    'RecReq_Reset_onEdit',
+  ];
+
   ScriptApp.getProjectTriggers().forEach(function(trigger) {
-    if (trigger.getHandlerFunction() === 'RecordsRequests_onEdit') {
-      RecordsRequests_log_('Deleting existing RecordsRequests_onEdit trigger', {
+    const handlerFunction = trigger.getHandlerFunction();
+
+    if (recordsRequestTriggerFunctions.indexOf(handlerFunction) !== -1) {
+      RecordsRequests_log_('Deleting existing Records Requests trigger', {
         triggerUniqueId: trigger.getUniqueId(),
+        handlerFunction: handlerFunction,
       });
 
       ScriptApp.deleteTrigger(trigger);
@@ -565,5 +575,6 @@ function RecordsRequests_createInstallableOnEditTrigger() {
 
   RecordsRequests_log_('Installable onEdit trigger created', {
     spreadsheetId: ss.getId(),
+    handlerFunction: 'RecordsRequests_onEdit',
   });
 }
