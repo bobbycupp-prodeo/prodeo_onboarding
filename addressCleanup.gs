@@ -16,15 +16,15 @@ const ADDRESS_CLEANUP_CONFIG = {
   colAmStreet: 49,  // AW
   colAmCity: 50,    // AX
   colAmZip: 51,     // AY
-  colAmOutput: 119, // DO
-  colAmGeocode: 121,// DQ
+  colAmOutput: 120, // DP
+  colAmGeocode: 122,// DR
 
   // PM Columns
   colPmStreet: 53,  // BA
   colPmCity: 54,    // BB
   colPmZip: 55,     // BC
-  colPmOutput: 120, // DP
-  colPmGeocode: 122 // DR
+  colPmOutput: 121, // DQ
+  colPmGeocode: 123  // DS
 };
 
 const ERROR_FLAG = "<FIX IN SCHOOLMINT>";
