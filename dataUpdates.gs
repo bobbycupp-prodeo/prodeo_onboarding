@@ -13,7 +13,7 @@ const DATA_UPDATES_CONFIG = {
   targetSheetSuffix: '-Incoming', // Used to build 'CH-Incoming', 'SP-Incoming'
   sourceHeaderRow: 2,
   targetHeaderRow: 2,
-  targetStartRow: 3,
+  targetStartRow: 4,
   sourceIdHeader: 'SM Student ID',
   sourceCampusHeader: 'Campus', // New config to locate the Campus column
   targetIdColumn: 1 // Column A

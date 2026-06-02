@@ -32,36 +32,37 @@ const ERROR_FLAG = "<FIX IN SCHOOLMINT>";
 function cleanAddresses() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(ADDRESS_CLEANUP_CONFIG.sheetName);
-  
+
   if (!sheet) {
     Logger.log(`Sheet not found: ${ADDRESS_CLEANUP_CONFIG.sheetName}`);
     return;
   }
-  
+
   const lastRow = sheet.getLastRow();
   if (lastRow < ADDRESS_CLEANUP_CONFIG.startRow) {
     Logger.log("No data to process.");
     return;
   }
 
-  // Read all data in bulk to minimize SpreadsheetApp calls
   const numRows = lastRow - ADDRESS_CLEANUP_CONFIG.startRow + 1;
-  
+
   const amStreetVals = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colAmStreet, numRows, 1).getValues();
   const amCityVals = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colAmCity, numRows, 1).getValues();
   const amZipVals = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colAmZip, numRows, 1).getValues();
-  
+
   const pmStreetVals = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colPmStreet, numRows, 1).getValues();
   const pmCityVals = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colPmCity, numRows, 1).getValues();
   const pmZipVals = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colPmZip, numRows, 1).getValues();
-  
+
   const amOutputRange = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colAmOutput, numRows, 1);
   const amOutputVals = amOutputRange.getValues();
+
   const amGeocodeRange = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colAmGeocode, numRows, 1);
   const amGeocodeVals = amGeocodeRange.getValues();
-  
+
   const pmOutputRange = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colPmOutput, numRows, 1);
   const pmOutputVals = pmOutputRange.getValues();
+
   const pmGeocodeRange = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colPmGeocode, numRows, 1);
   const pmGeocodeVals = pmGeocodeRange.getValues();
 
@@ -69,34 +70,49 @@ function cleanAddresses() {
   let pmUpdatesMade = false;
 
   for (let i = 0; i < numRows; i++) {
+    const rowNumber = i + ADDRESS_CLEANUP_CONFIG.startRow;
+
     // ------------------------------------
     // Process AM Address
     // ------------------------------------
     const amStreet = String(amStreetVals[i][0]).trim();
-    const amExistingOut = String(amOutputVals[i][0]).trim();
-    
-    // Process if it is blank OR if it was previously flagged as an error
-    if (amStreet && (amExistingOut === "" || amExistingOut === ERROR_FLAG)) {
+
+    if (amStreet) {
       const amCity = String(amCityVals[i][0]).trim();
       const amZip = String(amZipVals[i][0]).trim();
-      
+
       const amSearchCity = amCity ? amCity : "Twin Cities Metro";
       const amRawAddress = `${amStreet}, ${amSearchCity}, MN ${amZip}`.trim();
-      
+
       try {
         const amResult = verifyAddressWithMaps_(amRawAddress);
+
         if (amResult) {
-          // Check if we are updating an existing value or error flag to save unnecessary writes
-          if (amOutputVals[i][0] !== amResult.address || amGeocodeVals[i][0] !== amResult.geocode) {
+          const existingAmOutput = String(amOutputVals[i][0]).trim();
+          const existingAmGeocode = String(amGeocodeVals[i][0]).trim();
+
+          if (existingAmOutput !== amResult.address || existingAmGeocode !== amResult.geocode) {
             amOutputVals[i][0] = amResult.address;
             amGeocodeVals[i][0] = amResult.geocode;
             amUpdatesMade = true;
+
+            Logger.log(`Row ${rowNumber} (AM): Updated -> ${amResult.address}`);
+          } else {
+            Logger.log(`Row ${rowNumber} (AM): No change -> ${amResult.address}`);
           }
-          Logger.log(`Row ${i + ADDRESS_CLEANUP_CONFIG.startRow} (AM): ${amResult.address}`);
-          Utilities.sleep(1000); 
+
+          Utilities.sleep(1000);
         }
       } catch (e) {
-        Logger.log(`Error on row ${i + ADDRESS_CLEANUP_CONFIG.startRow} (AM): ${e.message}`);
+        Logger.log(`Error on row ${rowNumber} (AM): ${e.message}`);
+      }
+    } else {
+      // If the raw AM street is now blank, clear the cleaned output/geocode.
+      if (String(amOutputVals[i][0]).trim() !== "" || String(amGeocodeVals[i][0]).trim() !== "") {
+        amOutputVals[i][0] = "";
+        amGeocodeVals[i][0] = "";
+        amUpdatesMade = true;
+        Logger.log(`Row ${rowNumber} (AM): Raw street blank, cleared output/geocode.`);
       }
     }
 
@@ -104,61 +120,81 @@ function cleanAddresses() {
     // Process PM Address
     // ------------------------------------
     const pmStreet = String(pmStreetVals[i][0]).trim();
-    const pmExistingOut = String(pmOutputVals[i][0]).trim();
-    
-    // Process if it is blank OR if it was previously flagged as an error
-    if (pmStreet && (pmExistingOut === "" || pmExistingOut === ERROR_FLAG)) {
-      const isSameAsAm = isSubstantiallySame_(amStreet, pmStreet);
-      const currentAmOutput = String(amOutputVals[i][0]).trim(); 
+
+    if (pmStreet) {
+      const currentAmOutput = String(amOutputVals[i][0]).trim();
       const currentAmGeocode = String(amGeocodeVals[i][0]).trim();
-      
-      // If addresses match, copy from AM (this includes copying the ERROR_FLAG if AM failed)
+      const isSameAsAm = isSubstantiallySame_(amStreet, pmStreet);
+
+      // If PM appears to be the same as AM, copy the current AM result.
       if (isSameAsAm && currentAmOutput) {
-        if (pmOutputVals[i][0] !== currentAmOutput || pmGeocodeVals[i][0] !== currentAmGeocode) {
+        const existingPmOutput = String(pmOutputVals[i][0]).trim();
+        const existingPmGeocode = String(pmGeocodeVals[i][0]).trim();
+
+        if (existingPmOutput !== currentAmOutput || existingPmGeocode !== currentAmGeocode) {
           pmOutputVals[i][0] = currentAmOutput;
           pmGeocodeVals[i][0] = currentAmGeocode;
           pmUpdatesMade = true;
+
+          Logger.log(`Row ${rowNumber} (PM): Copied from AM -> ${currentAmOutput}`);
+        } else {
+          Logger.log(`Row ${rowNumber} (PM): No change, already matches AM -> ${currentAmOutput}`);
         }
-        Logger.log(`Row ${i + ADDRESS_CLEANUP_CONFIG.startRow} (PM): Skipped API, copied from AM -> ${currentAmOutput}`);
       } else {
         const pmCity = String(pmCityVals[i][0]).trim();
         const pmZip = String(pmZipVals[i][0]).trim();
-        
+
         const pmSearchCity = pmCity ? pmCity : "Twin Cities Metro";
         const pmRawAddress = `${pmStreet}, ${pmSearchCity}, MN ${pmZip}`.trim();
-        
+
         try {
           const pmResult = verifyAddressWithMaps_(pmRawAddress);
+
           if (pmResult) {
-            if (pmOutputVals[i][0] !== pmResult.address || pmGeocodeVals[i][0] !== pmResult.geocode) {
+            const existingPmOutput = String(pmOutputVals[i][0]).trim();
+            const existingPmGeocode = String(pmGeocodeVals[i][0]).trim();
+
+            if (existingPmOutput !== pmResult.address || existingPmGeocode !== pmResult.geocode) {
               pmOutputVals[i][0] = pmResult.address;
               pmGeocodeVals[i][0] = pmResult.geocode;
               pmUpdatesMade = true;
+
+              Logger.log(`Row ${rowNumber} (PM): Updated -> ${pmResult.address}`);
+            } else {
+              Logger.log(`Row ${rowNumber} (PM): No change -> ${pmResult.address}`);
             }
-            Logger.log(`Row ${i + ADDRESS_CLEANUP_CONFIG.startRow} (PM): ${pmResult.address}`);
-            Utilities.sleep(1000); 
+
+            Utilities.sleep(1000);
           }
         } catch (e) {
-          Logger.log(`Error on row ${i + ADDRESS_CLEANUP_CONFIG.startRow} (PM): ${e.message}`);
+          Logger.log(`Error on row ${rowNumber} (PM): ${e.message}`);
         }
+      }
+    } else {
+      // If the raw PM street is now blank, clear the cleaned output/geocode.
+      if (String(pmOutputVals[i][0]).trim() !== "" || String(pmGeocodeVals[i][0]).trim() !== "") {
+        pmOutputVals[i][0] = "";
+        pmGeocodeVals[i][0] = "";
+        pmUpdatesMade = true;
+        Logger.log(`Row ${rowNumber} (PM): Raw street blank, cleared output/geocode.`);
       }
     }
   }
 
-  // Write all new addresses back to the sheet at once
   if (amUpdatesMade) {
     amOutputRange.setValues(amOutputVals);
     amGeocodeRange.setValues(amGeocodeVals);
     Logger.log("AM Addresses & Geocodes written to sheet.");
   }
+
   if (pmUpdatesMade) {
     pmOutputRange.setValues(pmOutputVals);
     pmGeocodeRange.setValues(pmGeocodeVals);
     Logger.log("PM Addresses & Geocodes written to sheet.");
   }
-  
+
   if (!amUpdatesMade && !pmUpdatesMade) {
-    Logger.log("No new addresses needed cleaning.");
+    Logger.log("No address/geocode changes found.");
   }
 }
 
@@ -316,4 +352,24 @@ function getGeocodeOnly_(address) {
   }
   
   return "NOT FOUND";
+}
+
+function installDailyCleanAddressesTrigger() {
+  const functionName = "cleanAddresses";
+
+  // Remove existing daily triggers for this function so duplicates do not pile up.
+  ScriptApp.getProjectTriggers().forEach(trigger => {
+    if (trigger.getHandlerFunction() === functionName) {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+
+  // Runs daily between 5 AM and 6 AM in the script project's timezone.
+  ScriptApp.newTrigger(functionName)
+    .timeBased()
+    .everyDays(1)
+    .atHour(6)
+    .create();
+
+  Logger.log(`Daily trigger installed for ${functionName}.`);
 }
