@@ -11,25 +11,37 @@
 const ADDRESS_CLEANUP_CONFIG = {
   sheetName: 'sm_reg',
   startRow: 3,
-  
+
+  colStudentId: 2, // B
+
   // AM Columns
-  colAmStreet: 49,  // AW
-  colAmCity: 50,    // AX
-  colAmZip: 51,     // AY
-  colAmOutput: 120, // DP
-  colAmGeocode: 122,// DR
+  colAmStreet: 49,   // AW
+  colAmCity: 50,     // AX
+  colAmZip: 51,      // AY
+  colAmOutput: 120,  // DP
+  colAmGeocode: 122, // DR
 
   // PM Columns
-  colPmStreet: 53,  // BA
-  colPmCity: 54,    // BB
-  colPmZip: 55,     // BC
-  colPmOutput: 121, // DQ
-  colPmGeocode: 123  // DS
+  colPmStreet: 53,   // BA
+  colPmCity: 54,     // BB
+  colPmZip: 55,      // BC
+  colPmOutput: 121,  // DQ
+  colPmGeocode: 123, // DS
+
+  // Cleaned Address Tracking
+  colCleanedAddressStuId: 124 // DT
 };
 
 const ERROR_FLAG = "<FIX IN SCHOOLMINT>";
 
+const MAX_DISTANCE_FROM_INPUT_ZIP_MILES = 2;
+const ZIP_CENTER_CACHE = {};
+
 function cleanAddresses() {
+  cleanAddressesByMode_("all");
+}
+
+function cleanAddressesByMode_(mode) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(ADDRESS_CLEANUP_CONFIG.sheetName);
 
@@ -45,6 +57,13 @@ function cleanAddresses() {
   }
 
   const numRows = lastRow - ADDRESS_CLEANUP_CONFIG.startRow + 1;
+
+  const studentIdVals = sheet.getRange(
+    ADDRESS_CLEANUP_CONFIG.startRow,
+    ADDRESS_CLEANUP_CONFIG.colStudentId,
+    numRows,
+    1
+  ).getValues();
 
   const amStreetVals = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colAmStreet, numRows, 1).getValues();
   const amCityVals = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colAmCity, numRows, 1).getValues();
@@ -66,26 +85,44 @@ function cleanAddresses() {
   const pmGeocodeRange = sheet.getRange(ADDRESS_CLEANUP_CONFIG.startRow, ADDRESS_CLEANUP_CONFIG.colPmGeocode, numRows, 1);
   const pmGeocodeVals = pmGeocodeRange.getValues();
 
+  const cleanedStuIdRange = sheet.getRange(
+    ADDRESS_CLEANUP_CONFIG.startRow,
+    ADDRESS_CLEANUP_CONFIG.colCleanedAddressStuId,
+    numRows,
+    1
+  );
+  const cleanedStuIdVals = cleanedStuIdRange.getValues();
+
   let amUpdatesMade = false;
   let pmUpdatesMade = false;
+  let cleanedStuIdUpdatesMade = false;
 
   for (let i = 0; i < numRows; i++) {
     const rowNumber = i + ADDRESS_CLEANUP_CONFIG.startRow;
+    const studentId = String(studentIdVals[i][0]).trim();
 
     // ------------------------------------
     // Process AM Address
     // ------------------------------------
     const amStreet = String(amStreetVals[i][0]).trim();
+    const existingAmOutputAtStart = String(amOutputVals[i][0]).trim();
 
-    if (amStreet) {
+    if (
+      mode === "missingOrFlagged" &&
+      existingAmOutputAtStart !== "" &&
+      existingAmOutputAtStart !== ERROR_FLAG
+    ) {
+      Logger.log(`Row ${rowNumber} (AM): Skipped, already cleaned.`);
+    } else if (amStreet) {
       const amCity = String(amCityVals[i][0]).trim();
       const amZip = String(amZipVals[i][0]).trim();
 
       const amSearchCity = amCity ? amCity : "Twin Cities Metro";
-      const amRawAddress = `${amStreet}, ${amSearchCity}, MN ${amZip}`.trim();
+      const amStreetForSearch = normalizeStreetForGeocoding_(amStreet);
+      const amRawAddress = `${amStreetForSearch}, ${amSearchCity}, MN ${amZip}`.trim();
 
       try {
-        const amResult = verifyAddressWithMaps_(amRawAddress);
+        const amResult = verifyAddressWithMaps_(amRawAddress, amZip);
 
         if (amResult) {
           const existingAmOutput = String(amOutputVals[i][0]).trim();
@@ -120,8 +157,15 @@ function cleanAddresses() {
     // Process PM Address
     // ------------------------------------
     const pmStreet = String(pmStreetVals[i][0]).trim();
+    const existingPmOutputAtStart = String(pmOutputVals[i][0]).trim();
 
-    if (pmStreet) {
+    if (
+      mode === "missingOrFlagged" &&
+      existingPmOutputAtStart !== "" &&
+      existingPmOutputAtStart !== ERROR_FLAG
+    ) {
+      Logger.log(`Row ${rowNumber} (PM): Skipped, already cleaned.`);
+    } else if (pmStreet) {
       const currentAmOutput = String(amOutputVals[i][0]).trim();
       const currentAmGeocode = String(amGeocodeVals[i][0]).trim();
       const isSameAsAm = isSubstantiallySame_(amStreet, pmStreet);
@@ -145,10 +189,11 @@ function cleanAddresses() {
         const pmZip = String(pmZipVals[i][0]).trim();
 
         const pmSearchCity = pmCity ? pmCity : "Twin Cities Metro";
-        const pmRawAddress = `${pmStreet}, ${pmSearchCity}, MN ${pmZip}`.trim();
+        const pmStreetForSearch = normalizeStreetForGeocoding_(pmStreet);
+        const pmRawAddress = `${pmStreetForSearch}, ${pmSearchCity}, MN ${pmZip}`.trim();
 
         try {
-          const pmResult = verifyAddressWithMaps_(pmRawAddress);
+          const pmResult = verifyAddressWithMaps_(pmRawAddress, pmZip);
 
           if (pmResult) {
             const existingPmOutput = String(pmOutputVals[i][0]).trim();
@@ -179,6 +224,29 @@ function cleanAddresses() {
         Logger.log(`Row ${rowNumber} (PM): Raw street blank, cleared output/geocode.`);
       }
     }
+
+    // ------------------------------------
+    // Track which student owns the cleaned address data
+    // ------------------------------------
+    const hasCleanedAddressData =
+      String(amOutputVals[i][0]).trim() !== "" ||
+      String(amGeocodeVals[i][0]).trim() !== "" ||
+      String(pmOutputVals[i][0]).trim() !== "" ||
+      String(pmGeocodeVals[i][0]).trim() !== "";
+
+    const existingCleanedStuId = String(cleanedStuIdVals[i][0]).trim();
+
+    if (hasCleanedAddressData && studentId && existingCleanedStuId !== studentId) {
+      cleanedStuIdVals[i][0] = studentId;
+      cleanedStuIdUpdatesMade = true;
+      Logger.log(`Row ${rowNumber}: Cleaned Address StuID set to ${studentId}.`);
+    }
+
+    if (!hasCleanedAddressData && existingCleanedStuId !== "") {
+      cleanedStuIdVals[i][0] = "";
+      cleanedStuIdUpdatesMade = true;
+      Logger.log(`Row ${rowNumber}: Cleaned Address StuID cleared.`);
+    }
   }
 
   if (amUpdatesMade) {
@@ -193,8 +261,13 @@ function cleanAddresses() {
     Logger.log("PM Addresses & Geocodes written to sheet.");
   }
 
-  if (!amUpdatesMade && !pmUpdatesMade) {
-    Logger.log("No address/geocode changes found.");
+  if (cleanedStuIdUpdatesMade) {
+    cleanedStuIdRange.setValues(cleanedStuIdVals);
+    Logger.log("Cleaned Address StuIDs written to sheet.");
+  }
+
+  if (!amUpdatesMade && !pmUpdatesMade && !cleanedStuIdUpdatesMade) {
+    Logger.log("No address/geocode/student ID changes found.");
   }
 }
 
@@ -219,28 +292,86 @@ function isSubstantiallySame_(amStr, pmStr) {
  * Helper function to verify and clean addresses using Google Maps Data
  * Returns an object with the formatted address and the Lat/Long geocode.
  */
-function verifyAddressWithMaps_(rawAddress) {
+/**
+ * Helper function to verify and clean addresses using Google Maps Data.
+ * Returns an object with the formatted address and the Lat/Long geocode.
+ *
+ * If Google returns a result in a different ZIP area than the submitted ZIP,
+ * and the returned address is more than MAX_DISTANCE_FROM_INPUT_ZIP_MILES
+ * from the submitted ZIP area, this returns ERROR_FLAG instead.
+ */
+function verifyAddressWithMaps_(rawAddress, inputZip) {
+  const normalizedInputZip = normalizeZip_(inputZip);
   const response = Maps.newGeocoder().geocode(rawAddress);
-  
+
   if (response.status === 'OK' && response.results.length > 0) {
     const result = response.results[0];
-    
-    if (result.geometry.location_type === 'ROOFTOP' || result.geometry.location_type === 'RANGE_INTERPOLATED') {
-      
-      let streetNum = "", route = "", city = "", state = "", zip = "";
-      
+
+    const allowedLocationTypes = [
+      "ROOFTOP",
+      "RANGE_INTERPOLATED",
+      "GEOMETRIC_CENTER"
+      ];
+
+    if (allowedLocationTypes.includes(result.geometry.location_type)) {
+      let streetNum = "";
+      let route = "";
+      let city = "";
+      let state = "";
+      let zip = "";
+
       result.address_components.forEach(comp => {
         if (comp.types.includes("street_number")) streetNum = comp.short_name;
-        if (comp.types.includes("route")) route = comp.short_name; 
+        if (comp.types.includes("route")) route = comp.short_name;
         if (comp.types.includes("locality") || comp.types.includes("neighborhood")) city = comp.long_name;
         if (comp.types.includes("administrative_area_level_1")) state = comp.short_name;
         if (comp.types.includes("postal_code")) zip = comp.short_name;
       });
-      
+
+      const normalizedResultZip = normalizeZip_(zip);
+      const resultLocation = result.geometry.location;
+
+      if (normalizedInputZip && normalizedResultZip && normalizedInputZip !== normalizedResultZip) {
+        const inputZipCenter = getZipCenter_(normalizedInputZip);
+
+        if (!inputZipCenter) {
+          Logger.log(
+            `ZIP mismatch for "${rawAddress}". Input ZIP ${normalizedInputZip}, result ZIP ${normalizedResultZip}. Could not verify ZIP center, flagging.`
+          );
+
+          return {
+            address: ERROR_FLAG,
+            geocode: ""
+          };
+        }
+
+        const milesFromInputZip = getDistanceMiles_(
+          resultLocation.lat,
+          resultLocation.lng,
+          inputZipCenter.lat,
+          inputZipCenter.lng
+        );
+
+        if (milesFromInputZip > MAX_DISTANCE_FROM_INPUT_ZIP_MILES) {
+          Logger.log(
+            `ZIP/distance mismatch for "${rawAddress}". Input ZIP ${normalizedInputZip}, result ZIP ${normalizedResultZip}, distance ${milesFromInputZip.toFixed(2)} miles. Flagging.`
+          );
+
+          return {
+            address: ERROR_FLAG,
+            geocode: ""
+          };
+        }
+
+        Logger.log(
+          `ZIP mismatch allowed for "${rawAddress}". Input ZIP ${normalizedInputZip}, result ZIP ${normalizedResultZip}, distance ${milesFromInputZip.toFixed(2)} miles.`
+        );
+      }
+
       if (streetNum && route && city && zip) {
         const formattedAddress = `${streetNum} ${route}, ${city}, ${state} ${zip}`;
-        const geocode = `${result.geometry.location.lat}, ${result.geometry.location.lng}`;
-        
+        const geocode = `${resultLocation.lat}, ${resultLocation.lng}`;
+
         return {
           address: formattedAddress,
           geocode: geocode
@@ -248,12 +379,73 @@ function verifyAddressWithMaps_(rawAddress) {
       }
     }
   }
-  
-  // If it failed to find an exact match, output the new error flag
+
   return {
     address: ERROR_FLAG,
     geocode: ""
   };
+}
+
+/**
+ * Normalizes ZIPs to their first 5 digits.
+ */
+function normalizeZip_(zip) {
+  const match = String(zip || "").match(/\d{5}/);
+  return match ? match[0] : "";
+}
+
+/**
+ * Gets an approximate center point for a submitted ZIP.
+ * Cached during the script run to avoid repeated ZIP geocoding calls.
+ */
+function getZipCenter_(zip) {
+  const normalizedZip = normalizeZip_(zip);
+
+  if (!normalizedZip) return null;
+
+  if (ZIP_CENTER_CACHE[normalizedZip]) {
+    return ZIP_CENTER_CACHE[normalizedZip];
+  }
+
+  const response = Maps.newGeocoder().geocode(`${normalizedZip}, MN`);
+
+  if (response.status === 'OK' && response.results.length > 0) {
+    const location = response.results[0].geometry.location;
+
+    ZIP_CENTER_CACHE[normalizedZip] = {
+      lat: location.lat,
+      lng: location.lng
+    };
+
+    return ZIP_CENTER_CACHE[normalizedZip];
+  }
+
+  return null;
+}
+
+/**
+ * Calculates distance between two latitude/longitude points in miles.
+ */
+function getDistanceMiles_(lat1, lng1, lat2, lng2) {
+  const earthRadiusMiles = 3958.8;
+
+  const dLat = degreesToRadians_(lat2 - lat1);
+  const dLng = degreesToRadians_(lng2 - lng1);
+
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(degreesToRadians_(lat1)) *
+      Math.cos(degreesToRadians_(lat2)) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return earthRadiusMiles * c;
+}
+
+function degreesToRadians_(degrees) {
+  return degrees * Math.PI / 180;
 }
 
 /**
@@ -372,4 +564,25 @@ function installDailyCleanAddressesTrigger() {
     .create();
 
   Logger.log(`Daily trigger installed for ${functionName}.`);
+}
+
+function normalizeStreetForGeocoding_(street) {
+  return String(street || "")
+    .trim()
+    .replace(/\bstreet\b/gi, "St")
+    .replace(/\bavenue\b/gi, "Ave")
+    .replace(/\broad\b/gi, "Rd")
+    .replace(/\bboulevard\b/gi, "Blvd")
+    .replace(/\bdrive\b/gi, "Dr")
+    .replace(/\blane\b/gi, "Ln")
+    .replace(/\bplace\b/gi, "Pl")
+    .replace(/\bcourt\b/gi, "Ct")
+    .replace(/\bnorth\b/gi, "N")
+    .replace(/\bsouth\b/gi, "S")
+    .replace(/\beast\b/gi, "E")
+    .replace(/\bwest\b/gi, "W");
+}
+
+function cleanMissingOrFlaggedAddresses() {
+  cleanAddressesByMode_("missingOrFlagged");
 }
