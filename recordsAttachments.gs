@@ -15,7 +15,7 @@ const ENR_RECORDS_CONFIG = {
   destinationFolderId: '1lCJhLvAzT4p-GyMzbd9DU6bT8BQ7Z36n',
   destinationSheetName: 'Records Received',
 
-  chatWebhookUrl: 'https://chat.googleapis.com/v1/spaces/AAQA1FeFPy0/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=FnTOpsbGr8x3yDTzxbXNiwuEwAbph_9ik8bSg0yZrQk',
+  chatWebhookPropertyName: 'ENR_RECORDS_CHAT_WEBHOOK_URL',
 
   // Sheet columns:
   // A Date
@@ -436,4 +436,4 @@ function sendRecordsReceivedChatAlert_(options) {
   } else {
     Logger.log('Google Chat alert sent.');
   }
-}
+} 
